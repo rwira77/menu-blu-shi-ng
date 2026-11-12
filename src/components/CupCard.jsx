@@ -81,8 +81,12 @@ export default function CupCard({
         opacity,
         zIndex,
       }}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+      onPointerEnter={(e) => {
+        if (e.pointerType === 'mouse') setIsHovered(true)
+      }}
+      onPointerLeave={(e) => {
+        if (e.pointerType === 'mouse') setIsHovered(false)
+      }}
       onClick={() => onSelect?.(item)}
     >
       {/* Cup Container sized proportionally to viewport height & width */}

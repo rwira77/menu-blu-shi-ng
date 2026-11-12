@@ -30,6 +30,7 @@ export default function App() {
   const dragStartXRef = useRef(0)
   const dragStartScrollRef = useRef(0)
   const dragMovedRef = useRef(false)
+  const pointerSamplesRef = useRef([])
   const wheelSnapTimerRef = useRef(null)
 
   const t = UI_TEXT.id
@@ -58,16 +59,26 @@ export default function App() {
   const totalItems = visibleItems.length
   const isCircular = totalItems >= 4
 
-  // Main requestAnimationFrame loop for buttery-smooth scroll
+  // Frame-rate independent animation loop (silky across 60Hz, 90Hz & 120Hz displays)
   useEffect(() => {
     let rafId
-    const tick = () => {
+    let lastTime = performance.now()
+
+    const tick = (now) => {
+      const dt = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000))
+      lastTime = now
+
       const target = targetScrollRef.current
       const current = currentScrollRef.current
       const diff = target - current
 
-      const next = Math.abs(diff) < 0.0004 ? target : current + diff * 0.085
-      const velocity = next - current
+      // Responsive tracking while finger is dragging; smooth organic coast after release
+      const speed = isDraggingRef.current ? 28 : 7.8
+      const alpha = 1 - Math.exp(-speed * dt)
+
+      const next = Math.abs(diff) < 0.0004 ? target : current + diff * alpha
+      // Normalize velocity to 60fps units so tilt & blur feel identical on 60Hz and 120Hz screens
+      const velocity = (next - current) / (dt * 60)
       currentScrollRef.current = next
 
       setRenderState((prev) => {
@@ -137,38 +148,92 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [isCategoryMenuOpen, isCircular, totalItems])
 
-  // Pointer drag handlers for touch & mouse drag
+  // Responsive pixels-per-item for natural 1:1 touch & mouse drag across phone/tablet/desktop
+  const getPxPerItem = () => {
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 390
+    return Math.max(135, Math.min(330, vw * 0.36))
+  }
+
+  // Pointer drag handlers with momentum flick inertia for natural mobile swipe
   const handlePointerDown = (e) => {
     if (isCategoryMenuOpen) return
     if (e.target.closest('button, a, select')) return
+    if (wheelSnapTimerRef.current) clearTimeout(wheelSnapTimerRef.current)
+
     isDraggingRef.current = true
     dragMovedRef.current = false
     dragStartXRef.current = e.clientX
-    dragStartScrollRef.current = targetScrollRef.current
+    dragStartScrollRef.current = currentScrollRef.current
+    targetScrollRef.current = currentScrollRef.current
+    pointerSamplesRef.current = [{ x: e.clientX, t: performance.now() }]
   }
 
-  const handlePointerMove = (e) => {
-    if (!isDraggingRef.current) return
-    const dx = e.clientX - dragStartXRef.current
-    if (Math.abs(dx) > 6) {
-      dragMovedRef.current = true
-    }
-    const nextTarget = dragStartScrollRef.current - dx * 0.0042
-    targetScrollRef.current = isCircular
-      ? nextTarget
-      : Math.max(-0.35, Math.min(totalItems - 1 + 0.35, nextTarget))
-  }
+  useEffect(() => {
+    const handleWindowPointerMove = (e) => {
+      if (!isDraggingRef.current) return
+      const now = performance.now()
+      const dx = e.clientX - dragStartXRef.current
+      if (Math.abs(dx) > 6) {
+        dragMovedRef.current = true
+      }
 
-  const handlePointerUp = () => {
-    if (!isDraggingRef.current) return
-    isDraggingRef.current = false
-    if (dragMovedRef.current || !isCircular) {
-      const rounded = Math.round(targetScrollRef.current)
+      const pxPerItem = getPxPerItem()
+      const nextTarget = dragStartScrollRef.current - dx / pxPerItem
       targetScrollRef.current = isCircular
-        ? rounded
-        : Math.max(0, Math.min(totalItems - 1, rounded))
+        ? nextTarget
+        : Math.max(-0.35, Math.min(totalItems - 1 + 0.35, nextTarget))
+
+      const samples = pointerSamplesRef.current
+      samples.push({ x: e.clientX, t: now })
+      // Keep only recent samples within last 110ms for accurate flick velocity
+      while (samples.length > 2 && now - samples[0].t > 110) {
+        samples.shift()
+      }
     }
-  }
+
+    const handleWindowPointerUp = () => {
+      if (!isDraggingRef.current) return
+      isDraggingRef.current = false
+
+      if (dragMovedRef.current || !isCircular) {
+        const now = performance.now()
+        const samples = pointerSamplesRef.current.filter((s) => now - s.t <= 120)
+        let scrollVelPerSec = 0
+
+        if (samples.length >= 2) {
+          const first = samples[0]
+          const last = samples[samples.length - 1]
+          const dtSec = Math.max(0.012, (last.t - first.t) / 1000)
+          const pxPerSec = (last.x - first.x) / dtSec
+          scrollVelPerSec = -pxPerSec / getPxPerItem()
+        }
+
+        // Natural momentum projection
+        const clampedVel = Math.max(-8, Math.min(8, scrollVelPerSec))
+        const projected = targetScrollRef.current + clampedVel * 0.22
+        let snapped = Math.round(projected)
+
+        // Ensure quick natural thumb flick always advances at least 1 card
+        const startSnapped = Math.round(dragStartScrollRef.current)
+        if (Math.abs(clampedVel) > 0.7 && snapped === startSnapped) {
+          snapped = startSnapped + Math.sign(clampedVel)
+        }
+
+        targetScrollRef.current = isCircular
+          ? snapped
+          : Math.max(0, Math.min(totalItems - 1, snapped))
+      }
+    }
+
+    window.addEventListener('pointermove', handleWindowPointerMove, { passive: true })
+    window.addEventListener('pointerup', handleWindowPointerUp, { passive: true })
+    window.addEventListener('pointercancel', handleWindowPointerUp, { passive: true })
+    return () => {
+      window.removeEventListener('pointermove', handleWindowPointerMove)
+      window.removeEventListener('pointerup', handleWindowPointerUp)
+      window.removeEventListener('pointercancel', handleWindowPointerUp)
+    }
+  }, [isCircular, totalItems])
 
   // Jump smoothly to a specific index on the carousel
   const jumpToIndex = (targetIdx) => {
@@ -213,11 +278,8 @@ export default function App() {
 
   return (
     <div
-      className="relative w-screen h-screen overflow-hidden bg-[#FAF5EF] select-none"
+      className="relative w-screen h-screen overflow-hidden bg-[#FAF5EF] select-none touch-none"
       onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={handlePointerUp}
     >
       {/* Subtle ambient background glow matching the active drink */}
       <div

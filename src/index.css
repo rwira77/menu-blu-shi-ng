@@ -10,6 +10,7 @@
     box-sizing: border-box;
     user-select: none;
     -webkit-user-drag: none;
+    -webkit-tap-highlight-color: transparent;
   }
 
   html,
@@ -20,6 +21,8 @@
     margin: 0;
     padding: 0;
     overflow: hidden;
+    overscroll-behavior: none;
+    touch-action: none;
     font-family: var(--font-sans);
     background-color: #FAF5EF;
     color: #1B1521;
